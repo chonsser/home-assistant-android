@@ -4,12 +4,15 @@ import android.content.Context
 import android.content.Intent
 import android.net.Uri
 import android.os.Bundle
+import android.widget.Toast
 import androidx.activity.compose.setContent
 import androidx.activity.viewModels
 import androidx.annotation.VisibleForTesting
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.runtime.Composable
@@ -17,6 +20,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.res.vectorResource
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
@@ -27,10 +31,14 @@ import androidx.lifecycle.repeatOnLifecycle
 import dagger.hilt.android.AndroidEntryPoint
 import io.homeassistant.companion.android.BaseActivity
 import io.homeassistant.companion.android.R
+import io.homeassistant.companion.android.common.R as commonR
+import io.homeassistant.companion.android.common.compose.composable.HAPlainButton
+import io.homeassistant.companion.android.common.compose.theme.HADimens
 import io.homeassistant.companion.android.common.compose.theme.HATheme
 import io.homeassistant.companion.android.common.compose.theme.HAThemeForPreview
 import io.homeassistant.companion.android.frontend.navigation.FrontendTarget
 import io.homeassistant.companion.android.launch.LaunchActivity
+import io.homeassistant.companion.android.launch.intentLaunchOnboarding
 import io.homeassistant.companion.android.launch.startLaunchInvitation
 import io.homeassistant.companion.android.launch.startLaunchWithNavigateTo
 import io.homeassistant.companion.android.settings.server.ServerChooser
@@ -72,6 +80,8 @@ class LinkActivity : BaseActivity() {
                     uiState = uiState,
                     onServerSelected = viewModel::onServerSelected,
                     onServerChooserDismissed = viewModel::onServerChooserDismissed,
+                    onTailcatServerSelected = viewModel::onTailcatServerSelected,
+                    onTailcatNewServerSelected = viewModel::onTailcatNewServerSelected,
                 )
             }
         }
@@ -94,6 +104,18 @@ class LinkActivity : BaseActivity() {
             LinkNavigationEvent.Finish -> Unit
             is LinkNavigationEvent.OpenInvitation -> startLaunchInvitation(event.serverUrl)
             is LinkNavigationEvent.NavigateToWebView -> startLaunchWithNavigateTo(event.target, event.serverId)
+            is LinkNavigationEvent.OpenTailcatOnboarding -> startActivity(
+                intentLaunchOnboarding(urlToOnboard = event.serverUrl, hideExistingServers = true, skipWelcome = true),
+            )
+            is LinkNavigationEvent.ShowError -> Toast.makeText(this, event.messageRes, Toast.LENGTH_LONG).show()
+            is LinkNavigationEvent.TailcatPaired -> {
+                Toast.makeText(
+                    this,
+                    getString(commonR.string.tailcat_paired_server, event.serverName),
+                    Toast.LENGTH_LONG,
+                ).show()
+                startLaunchWithNavigateTo(FrontendTarget.Default, event.serverId)
+            }
         }
         finish()
     }
@@ -107,6 +129,8 @@ fun LinkActivityScreen(
     onServerSelected: (Int) -> Unit,
     onServerChooserDismissed: () -> Unit,
     modifier: Modifier = Modifier,
+    onTailcatServerSelected: (Int) -> Unit = {},
+    onTailcatNewServerSelected: () -> Unit = {},
 ) {
     Box(modifier = modifier.fillMaxSize()) {
         Image(
@@ -117,12 +141,28 @@ fun LinkActivityScreen(
                 .align(Alignment.Center),
         )
 
-        if (uiState is LinkUiState.ChoosingServer) {
-            ServerChooser(
+        when (uiState) {
+            is LinkUiState.ChoosingServer -> ServerChooser(
                 items = uiState.items,
                 onServerSelected = onServerSelected,
                 onDismissRequest = onServerChooserDismissed,
             )
+            is LinkUiState.ChoosingTailcatServer -> ServerChooser(
+                items = uiState.items,
+                onServerSelected = onTailcatServerSelected,
+                onDismissRequest = onServerChooserDismissed,
+                title = stringResource(commonR.string.tailcat_choose_server),
+                footer = {
+                    HAPlainButton(
+                        text = stringResource(commonR.string.tailcat_add_new_server),
+                        onClick = onTailcatNewServerSelected,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = HADimens.SPACE4, vertical = HADimens.SPACE2),
+                    )
+                },
+            )
+            LinkUiState.Loading -> Unit
         }
     }
 }

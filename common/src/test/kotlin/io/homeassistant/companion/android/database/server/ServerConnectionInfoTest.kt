@@ -380,4 +380,26 @@ class ServerConnectionInfoTest {
             assertEquals(original, deserialized)
         }
     }
+
+    @Nested
+    inner class Tailcat {
+
+        @Test
+        fun `Given a webhook and only a Tailcat pairing then the server is registered and has a URL`() {
+            val connection = ServerConnectionInfo(externalUrl = "", webhookId = "hook", tailcat = "encrypted")
+
+            assertTrue(connection.hasTailcat)
+            assertTrue(connection.hasAtLeastOneUrl)
+            assertTrue(connection.isRegistered)
+        }
+
+        @Test
+        fun `Given a webhook and neither URL nor Tailcat pairing then the server is not registered`() {
+            val connection = ServerConnectionInfo(externalUrl = "", webhookId = "hook", tailcat = null)
+
+            assertFalse(connection.hasTailcat)
+            assertFalse(connection.hasAtLeastOneUrl)
+            assertFalse(connection.isRegistered)
+        }
+    }
 }

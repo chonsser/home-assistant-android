@@ -3,6 +3,9 @@ package io.homeassistant.companion.android.launch.link
 import android.net.Uri
 import androidx.core.net.toUri
 import io.homeassistant.companion.android.common.data.servers.ServerManager
+import io.homeassistant.companion.android.common.data.tailcat.TailcatPairingLink
+import io.homeassistant.companion.android.common.data.tailcat.TailcatPairingLinkError
+import io.homeassistant.companion.android.common.data.tailcat.TailcatPairingLinkResult
 import io.homeassistant.companion.android.common.util.FailFast
 import io.homeassistant.companion.android.database.server.Server
 import io.homeassistant.companion.android.frontend.navigation.FrontendTarget
@@ -93,6 +96,17 @@ sealed interface LinkDestination {
     data class Onboarding(val serverUrl: String) : LinkDestination
 
     /**
+     * Pair a server through the Tailcat tunnel described by [link]: a new server, or one the user
+     * already has. The link holds secrets, so this destination is never logged.
+     */
+    data class TailcatPairing(val link: TailcatPairingLink) : LinkDestination
+
+    /**
+     * A Tailcat pairing link that cannot be used, for [error].
+     */
+    data class InvalidTailcatPairing(val error: TailcatPairingLinkError) : LinkDestination
+
+    /**
      * Open the frontend at [target] on the server identified by [serverId].
      */
     data class Webview(val target: FrontendTarget, val serverId: Int) : LinkDestination
@@ -126,6 +140,10 @@ interface LinkHandler {
 class LinkHandlerImpl @Inject constructor(private val serverManager: ServerManager) : LinkHandler {
 
     override suspend fun handleLink(uri: Uri): LinkDestination {
+        // Checked first and never logged: a pairing link carries the tunnel's secrets.
+        if (TailcatPairingLink.isPairingLink(uri.toString())) {
+            return handleTailcatPairingLink(uri)
+        }
         return when (uri.scheme) {
             "https" -> handleUniversalLink(uri)
             HA_DEEP_LINK_SCHEME -> handleDeepLink(uri)
@@ -210,6 +228,20 @@ class LinkHandlerImpl @Inject constructor(private val serverManager: ServerManag
             LinkDestination.NoDestination
         } else {
             LinkDestination.Onboarding(serverURL)
+        }
+    }
+
+    /**
+     * Handles Tailcat pairing links `homeassistant://tailcat/pair?address=…&key=…&port=…&name=…`
+     * produced by the Tailcat integration of Home Assistant.
+     */
+    private fun handleTailcatPairingLink(uri: Uri): LinkDestination {
+        return when (val result = TailcatPairingLink.parse(uri.toString())) {
+            is TailcatPairingLinkResult.Valid -> LinkDestination.TailcatPairing(result.link)
+            is TailcatPairingLinkResult.Invalid -> {
+                Timber.w("Rejected Tailcat pairing link: ${result.error}")
+                LinkDestination.InvalidTailcatPairing(result.error)
+            }
         }
     }
 

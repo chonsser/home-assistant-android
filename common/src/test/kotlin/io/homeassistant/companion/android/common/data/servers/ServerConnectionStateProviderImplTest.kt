@@ -8,6 +8,10 @@ import androidx.core.content.ContextCompat
 import io.homeassistant.companion.android.common.data.network.NetworkChangeObserver
 import io.homeassistant.companion.android.common.data.network.NetworkHelper
 import io.homeassistant.companion.android.common.data.network.WifiHelper
+import io.homeassistant.companion.android.common.data.tailcat.TailcatConfig
+import io.homeassistant.companion.android.common.data.tailcat.TailcatConfigCipher
+import io.homeassistant.companion.android.common.data.tailcat.TailcatTunnelResolver
+import io.homeassistant.companion.android.common.data.tailcat.TailcatUrlProvider
 import io.homeassistant.companion.android.common.util.DisabledLocationHandler
 import io.homeassistant.companion.android.database.server.Server
 import io.homeassistant.companion.android.database.server.ServerConnectionInfo
@@ -20,9 +24,11 @@ import io.mockk.mockk
 import io.mockk.mockkObject
 import io.mockk.mockkStatic
 import io.mockk.unmockkAll
+import java.util.Optional
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.test.runTest
+import okhttp3.HttpUrl.Companion.toHttpUrl
 import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
@@ -70,6 +76,8 @@ class ServerConnectionStateProviderImplTest {
         internalVpn: Boolean? = null,
         prioritizeInternal: Boolean = false,
         allowInsecureConnection: Boolean? = null,
+        tailcatUrl: String? = null,
+        canRunTailcat: Boolean = true,
     ): ServerConnectionStateProviderImpl {
         val connection = ServerConnectionInfo(
             externalUrl = externalUrl,
@@ -83,6 +91,7 @@ class ServerConnectionStateProviderImplTest {
             internalVpn = internalVpn,
             prioritizeInternal = prioritizeInternal,
             allowInsecureConnection = allowInsecureConnection,
+            tailcat = tailcatUrl?.let { FakeTailcatCipher.ENCRYPTED },
         )
         val server = Server(
             id = serverId,
@@ -105,8 +114,25 @@ class ServerConnectionStateProviderImplTest {
             wifiHelper = wifiHelper,
             networkHelper = networkHelper,
             networkChangeObserver = networkChangeObserver,
+            tailcatUrlProvider = TailcatUrlProvider(
+                cipher = FakeTailcatCipher,
+                resolver = if (canRunTailcat) {
+                    Optional.of(TailcatTunnelResolver { tailcatUrl?.toHttpUrl() })
+                } else {
+                    Optional.empty()
+                },
+            ),
             serverId = serverId,
         )
+    }
+
+    private object FakeTailcatCipher : TailcatConfigCipher {
+        const val ENCRYPTED = "encrypted"
+        private val config = TailcatConfig(address = "tcaddress", clientPrivateKey = "privkey:00", tunnelPort = 8123)
+
+        override fun encrypt(config: TailcatConfig): String = ENCRYPTED
+
+        override fun decrypt(encrypted: String): TailcatConfig? = config.takeIf { encrypted == ENCRYPTED }
     }
 
     @Nested
@@ -834,6 +860,132 @@ class ServerConnectionStateProviderImplTest {
 
             assertTrue(result is UrlState.HasUrl)
             assertEquals("https://cloud.example.com/", (result as UrlState.HasUrl).url?.toString())
+        }
+    }
+
+    @Nested
+    inner class Tailcat {
+        private val tunnelUrl = "http://127.0.0.1:40123"
+
+        private fun ServerConnectionStateProviderImpl.stubNotOnHomeNetwork() {
+            every { serverDao.getFlow(serverId) } returns flowOf(null)
+            every { DisabledLocationHandler.isLocationEnabled(context) } returns true
+        }
+
+        @Test
+        fun `Given a server only reachable through Tailcat when collecting urlFlow then emits the tunnel URL even if insecure connections are not allowed`() = runTest {
+            val provider = createServerConnectionStateProvider(
+                externalUrl = "",
+                tailcatUrl = tunnelUrl,
+                allowInsecureConnection = false,
+            ).apply { stubNotOnHomeNetwork() }
+
+            val result = provider.urlFlow().first()
+
+            assertEquals(UrlState.HasUrl(java.net.URL("$tunnelUrl/")), result)
+        }
+
+        @Test
+        fun `Given HTTPS external URL and Tailcat when collecting urlFlow then prefers the external URL`() = runTest {
+            val provider = createServerConnectionStateProvider(
+                externalUrl = "https://external.example.com",
+                tailcatUrl = tunnelUrl,
+            ).apply { stubNotOnHomeNetwork() }
+
+            val result = provider.urlFlow().first()
+
+            assertEquals("https://external.example.com/", (result as UrlState.HasUrl).url?.toString())
+        }
+
+        @Test
+        fun `Given plain HTTP external URL and Tailcat when collecting urlFlow then prefers the tunnel`() = runTest {
+            val provider = createServerConnectionStateProvider(
+                externalUrl = "http://192.168.1.2:8123",
+                tailcatUrl = tunnelUrl,
+                allowInsecureConnection = false,
+            ).apply { stubNotOnHomeNetwork() }
+
+            val result = provider.urlFlow().first()
+
+            assertEquals("$tunnelUrl/", (result as UrlState.HasUrl).url?.toString())
+        }
+
+        @Test
+        fun `Given cloud enabled and Tailcat when collecting urlFlow then prefers the cloud URL`() = runTest {
+            val provider = createServerConnectionStateProvider(
+                externalUrl = "",
+                cloudUrl = "https://cloud.example.com",
+                useCloud = true,
+                tailcatUrl = tunnelUrl,
+            ).apply { stubNotOnHomeNetwork() }
+
+            val result = provider.urlFlow().first()
+
+            assertEquals("https://cloud.example.com/", (result as UrlState.HasUrl).url?.toString())
+        }
+
+        @Test
+        fun `Given home network with internal URL and Tailcat when collecting urlFlow then prefers the internal URL`() = runTest {
+            val provider = createServerConnectionStateProvider(
+                externalUrl = "",
+                internalUrl = "http://192.168.1.2:8123",
+                internalEthernet = true,
+                tailcatUrl = tunnelUrl,
+            ).apply { stubNotOnHomeNetwork() }
+            every { networkHelper.isUsingEthernet() } returns true
+
+            val result = provider.urlFlow().first()
+
+            assertEquals("http://192.168.1.2:8123/", (result as UrlState.HasUrl).url?.toString())
+        }
+
+        @Test
+        fun `Given a process that cannot run tunnels when collecting urlFlow then never uses Tailcat`() = runTest {
+            val provider = createServerConnectionStateProvider(
+                externalUrl = "",
+                tailcatUrl = tunnelUrl,
+                canRunTailcat = false,
+            ).apply { stubNotOnHomeNetwork() }
+
+            val result = provider.urlFlow().first()
+
+            assertEquals(UrlState.HasUrl(null), result)
+        }
+
+        @Test
+        fun `Given HTTPS and plain HTTP external URLs when getting API URLs then the tunnel ranks after HTTPS and before HTTP`() = runTest {
+            val httpsProvider = createServerConnectionStateProvider(
+                externalUrl = "https://external.example.com",
+                webhookId = "hook",
+                tailcatUrl = tunnelUrl,
+            )
+            assertEquals(
+                listOf("https://external.example.com/api/webhook/hook", "$tunnelUrl/api/webhook/hook"),
+                httpsProvider.getApiUrls().map { it.toString() },
+            )
+
+            val httpProvider = createServerConnectionStateProvider(
+                externalUrl = "http://192.168.1.2:8123",
+                webhookId = "hook",
+                tailcatUrl = tunnelUrl,
+                allowInsecureConnection = true,
+            )
+            assertEquals(
+                listOf("$tunnelUrl/api/webhook/hook", "http://192.168.1.2:8123/api/webhook/hook"),
+                httpProvider.getApiUrls().map { it.toString() },
+            )
+        }
+
+        @Test
+        fun `Given the tunnel URL when checking credentials then they may be sent there but not to another loopback port`() = runTest {
+            val provider = createServerConnectionStateProvider(
+                externalUrl = "",
+                tailcatUrl = tunnelUrl,
+                allowInsecureConnection = false,
+            )
+
+            assertTrue(provider.canSafelySendCredentials("$tunnelUrl/auth/token"))
+            assertFalse(provider.canSafelySendCredentials("http://127.0.0.1:40124/auth/token"))
         }
     }
 }

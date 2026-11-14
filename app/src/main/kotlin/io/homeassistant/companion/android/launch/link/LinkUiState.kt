@@ -18,4 +18,10 @@ sealed interface LinkUiState {
      * is opened at [target].
      */
     data class ChoosingServer(val items: List<ServerChooserItem>, val target: FrontendTarget) : LinkUiState
+
+    /**
+     * A Tailcat pairing link arrived while servers are registered: the user picks one of [items] to
+     * reach through the tunnel, or adds the paired server as a new one.
+     */
+    data class ChoosingTailcatServer(val items: List<ServerChooserItem>) : LinkUiState
 }

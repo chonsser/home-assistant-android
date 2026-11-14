@@ -15,6 +15,7 @@ import io.homeassistant.companion.android.common.data.servers.ServerManager
 import io.homeassistant.companion.android.common.util.AppVersion
 import io.homeassistant.companion.android.common.util.MessagingTokenProvider
 import io.homeassistant.companion.android.onboarding.nameyourdevice.navigation.NameYourDeviceRoute
+import io.homeassistant.companion.android.tailcat.TailcatOnboarding
 import io.homeassistant.companion.android.util.isPubliclyAccessible
 import java.net.URL
 import javax.inject.Inject
@@ -53,12 +54,14 @@ internal sealed interface NameYourDeviceNavigationEvent {
  * directly to the phone app via [io.homeassistant.companion.android.onboarding.WearOnboardApp.Output].
  */
 @HiltViewModel
+@Suppress("LongParameterList")
 internal class NameYourDeviceViewModel @VisibleForTesting constructor(
     private val route: NameYourDeviceRoute,
     private val serverManager: ServerManager,
     private val serverRegistrationRepository: ServerRegistrationRepository,
     private val appVersion: AppVersion,
     private val messagingTokenProvider: MessagingTokenProvider,
+    private val tailcatOnboarding: TailcatOnboarding,
     defaultName: String = Build.MODEL,
 ) : ViewModel() {
 
@@ -69,12 +72,14 @@ internal class NameYourDeviceViewModel @VisibleForTesting constructor(
         serverRegistrationRepository: ServerRegistrationRepository,
         appVersion: AppVersion,
         messagingTokenProvider: MessagingTokenProvider,
+        tailcatOnboarding: TailcatOnboarding,
     ) : this(
         savedStateHandle.toRoute<NameYourDeviceRoute>(),
         serverManager,
         serverRegistrationRepository,
         appVersion,
         messagingTokenProvider,
+        tailcatOnboarding,
     )
 
     private val _navigationEventsFlow = Channel<NameYourDeviceNavigationEvent>(Channel.BUFFERED)
@@ -101,14 +106,18 @@ internal class NameYourDeviceViewModel @VisibleForTesting constructor(
             try {
                 _isSavingFlow.emit(true)
                 val url = route.url
-                val hasPlainTextAccess = url.startsWith("http://")
+                // A Tailcat tunnel is served on a plain HTTP loopback URL, but it reaches the server
+                // from anywhere and is encrypted end to end.
+                val isTailcat = tailcatOnboarding.isOnboardingUrl(url)
+                val hasPlainTextAccess = !isTailcat && url.startsWith("http://")
                 val serverId = addServer(hasPlainTextAccess = hasPlainTextAccess)
 
                 _navigationEventsFlow.send(
                     NameYourDeviceNavigationEvent.DeviceNameSaved(
                         serverId,
                         hasPlainTextAccess = hasPlainTextAccess,
-                        isPubliclyAccessible = runCatching { URL(url).isPubliclyAccessible() }.getOrDefault(false),
+                        isPubliclyAccessible = isTailcat ||
+                            runCatching { URL(url).isPubliclyAccessible() }.getOrDefault(false),
                     ),
                 )
             } catch (e: Exception) {
@@ -146,6 +155,7 @@ internal class NameYourDeviceViewModel @VisibleForTesting constructor(
             ) { "Registration failed" }
 
             serverId = serverManager.addServer(temporaryServer)
+            tailcatOnboarding.complete(url = route.url, serverId = serverId)
             serverManager.integrationRepository(serverId).registerDevice(
                 DeviceRegistration(
                     appVersion,

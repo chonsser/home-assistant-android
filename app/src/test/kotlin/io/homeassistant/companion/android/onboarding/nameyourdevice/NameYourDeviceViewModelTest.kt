@@ -17,10 +17,12 @@ import io.homeassistant.companion.android.database.server.ServerSessionInfo
 import io.homeassistant.companion.android.database.server.ServerUserInfo
 import io.homeassistant.companion.android.database.server.TemporaryServer
 import io.homeassistant.companion.android.onboarding.nameyourdevice.navigation.NameYourDeviceRoute
+import io.homeassistant.companion.android.tailcat.TailcatOnboarding
 import io.homeassistant.companion.android.testing.unit.MainDispatcherJUnit5Extension
 import io.mockk.Runs
 import io.mockk.coEvery
 import io.mockk.coVerify
+import io.mockk.coVerifyOrder
 import io.mockk.every
 import io.mockk.just
 import io.mockk.mockk
@@ -59,6 +61,10 @@ class NameYourDeviceViewModelTest {
     private val messagingTokenProvider: MessagingTokenProvider = MessagingTokenProvider {
         return@MessagingTokenProvider MessagingToken("test_messaging_token")
     }
+    private val tailcatOnboarding: TailcatOnboarding = mockk {
+        every { isOnboardingUrl(any()) } returns false
+        coEvery { complete(any(), any()) } returns false
+    }
     private val integrationRepository: IntegrationRepository = mockk()
 
     private lateinit var viewModel: NameYourDeviceViewModel
@@ -94,6 +100,7 @@ class NameYourDeviceViewModelTest {
             serverRegistrationRepository,
             appVersion,
             messagingTokenProvider,
+            tailcatOnboarding,
             defaultName = DEFAULT_DEVICE_NAME,
         )
     }
@@ -261,6 +268,7 @@ class NameYourDeviceViewModelTest {
             serverRegistrationRepository,
             appVersion,
             messagingTokenProvider,
+            tailcatOnboarding,
             defaultName = DEFAULT_DEVICE_NAME,
         )
 
@@ -301,6 +309,43 @@ class NameYourDeviceViewModelTest {
             }
             // Secure connection is enforced during server creation
             assertEquals(false, tempServerSlot.captured.allowInsecureConnection)
+        }
+    }
+
+    @Test
+    fun `Given onboarding through a Tailcat tunnel when onSaveClick then attaches the pairing before registering and treats the server as secure and public`() = runTest {
+        val testServerId = 1
+        every { tailcatOnboarding.isOnboardingUrl(route.url) } returns true
+        coEvery { tailcatOnboarding.complete(route.url, testServerId) } returns true
+        coEvery {
+            serverRegistrationRepository.registerAuthorizationCode(
+                url = route.url,
+                authorizationCode = route.authCode,
+                allowInsecureConnection = false,
+            )
+        } returns createTemporaryServer()
+        coEvery { serverManager.addServer(any()) } returns testServerId
+        coEvery { integrationRepository.registerDevice(any()) } just Runs
+
+        turbineScope {
+            val navEvents = viewModel.navigationEventsFlow.testIn(backgroundScope)
+
+            viewModel.onSaveClick()
+            advanceUntilIdle()
+
+            assertEquals(
+                NameYourDeviceNavigationEvent.DeviceNameSaved(
+                    testServerId,
+                    hasPlainTextAccess = false,
+                    isPubliclyAccessible = true,
+                ),
+                navEvents.awaitItem(),
+            )
+            coVerifyOrder {
+                serverManager.addServer(any())
+                tailcatOnboarding.complete(route.url, testServerId)
+                integrationRepository.registerDevice(any())
+            }
         }
     }
 

@@ -4,8 +4,14 @@ import android.net.Uri
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import dagger.hilt.android.lifecycle.HiltViewModel
+import io.homeassistant.companion.android.common.R as commonR
+import io.homeassistant.companion.android.common.data.servers.ServerManager
+import io.homeassistant.companion.android.common.data.tailcat.TailcatPairingLink
 import io.homeassistant.companion.android.common.util.FailFast
 import io.homeassistant.companion.android.settings.server.ServerChooserItemsUseCase
+import io.homeassistant.companion.android.tailcat.TailcatOnboarding
+import io.homeassistant.companion.android.tailcat.TailcatServerPairing
+import io.homeassistant.companion.android.tailcat.messageRes
 import javax.inject.Inject
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.Flow
@@ -22,7 +28,13 @@ import kotlinx.coroutines.launch
 class LinkViewModel @Inject constructor(
     private val linkHandler: LinkHandler,
     private val serverChooserItemsUseCase: ServerChooserItemsUseCase,
+    private val serverManager: ServerManager,
+    private val tailcatServerPairing: TailcatServerPairing,
+    private val tailcatOnboarding: TailcatOnboarding,
 ) : ViewModel() {
+
+    /** The Tailcat pairing waiting for the user to pick a server, kept out of the UI state. */
+    private var pendingTailcatLink: TailcatPairingLink? = null
 
     private val _uiState = MutableStateFlow<LinkUiState>(LinkUiState.Loading)
     val uiState: StateFlow<LinkUiState> = _uiState.asStateFlow()
@@ -57,6 +69,9 @@ class LinkViewModel @Inject constructor(
                     _navigationEvents.send(
                         LinkNavigationEvent.NavigateToWebView(destination.target, destination.serverId),
                     )
+                is LinkDestination.TailcatPairing -> onTailcatPairing(destination.link)
+                is LinkDestination.InvalidTailcatPairing ->
+                    _navigationEvents.send(LinkNavigationEvent.ShowError(destination.error.messageRes()))
                 is LinkDestination.ServerPicker ->
                     serverChooserItemsUseCase(destination.servers).collect { items ->
                         _uiState.value = LinkUiState.ChoosingServer(
@@ -75,5 +90,56 @@ class LinkViewModel @Inject constructor(
 
     fun onServerChooserDismissed() {
         _navigationEvents.trySend(LinkNavigationEvent.Finish)
+    }
+
+    /** Pairs the server picked in [LinkUiState.ChoosingTailcatServer] with the pending Tailcat link. */
+    fun onTailcatServerSelected(serverId: Int) {
+        val link = pendingTailcatLink ?: return
+        viewModelScope.launch { attachTailcat(link, serverId) }
+    }
+
+    /** Onboards the server of the pending Tailcat link as a new server. */
+    fun onTailcatNewServerSelected() {
+        val link = pendingTailcatLink ?: return
+        viewModelScope.launch { onboardTailcat(link) }
+    }
+
+    private suspend fun onTailcatPairing(link: TailcatPairingLink) {
+        if (!tailcatServerPairing.isAvailable()) {
+            _navigationEvents.send(LinkNavigationEvent.ShowError(commonR.string.tailcat_unavailable))
+            return
+        }
+        // Pairing again with a server already reached through this tunnel only refreshes its key.
+        val pairedServer = tailcatServerPairing.serverPairedWith(link.config)
+        val servers = if (pairedServer == null) serverManager.servers() else emptyList()
+        when {
+            pairedServer != null -> attachTailcat(link, pairedServer.id)
+            servers.isEmpty() -> onboardTailcat(link)
+            else -> {
+                pendingTailcatLink = link
+                serverChooserItemsUseCase(servers).collect { items ->
+                    _uiState.value = LinkUiState.ChoosingTailcatServer(items)
+                }
+            }
+        }
+    }
+
+    private suspend fun attachTailcat(link: TailcatPairingLink, serverId: Int) {
+        tailcatServerPairing.attach(link.config, serverId)
+        pendingTailcatLink = null
+        val name = serverManager.getServer(serverId)?.friendlyName.orEmpty()
+        _navigationEvents.send(LinkNavigationEvent.TailcatPaired(serverName = name, serverId = serverId))
+    }
+
+    private suspend fun onboardTailcat(link: TailcatPairingLink) {
+        val url = tailcatOnboarding.start(link.config)
+        pendingTailcatLink = null
+        _navigationEvents.send(
+            if (url != null) {
+                LinkNavigationEvent.OpenTailcatOnboarding(url.toString())
+            } else {
+                LinkNavigationEvent.ShowError(commonR.string.tailcat_tunnel_unavailable)
+            },
+        )
     }
 }

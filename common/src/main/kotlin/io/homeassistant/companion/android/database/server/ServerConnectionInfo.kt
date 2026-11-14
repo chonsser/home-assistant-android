@@ -34,6 +34,9 @@ import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
  * @property allowInsecureConnection Controls whether non-HTTPS connections are permitted
  *   when not on the home network. `null` means the user hasn't set their preference yet (legacy
  *   installs), `true` allows insecure connections, when `false` insecure connections should be blocked.
+ * @property tailcat Encrypted Tailcat tunnel configuration (see `TailcatConfigCipher`), `null` when the
+ *   server is not paired through Tailcat. The tunnel's loopback URL only exists while the app process
+ *   runs it, so it is never stored here: it is resolved by `TailcatUrlProvider`.
  */
 data class ServerConnectionInfo(
     @ColumnInfo(name = "external_url")
@@ -60,6 +63,8 @@ data class ServerConnectionInfo(
     val prioritizeInternal: Boolean = false,
     @ColumnInfo(name = "allow_insecure_connection")
     val allowInsecureConnection: Boolean? = null,
+    @ColumnInfo(name = "tailcat")
+    val tailcat: String? = null,
 ) {
     // Keep the parsing of the URLs from String to HttpUrl to avoid doing it multiple times
     @get:Ignore
@@ -96,11 +101,17 @@ data class ServerConnectionInfo(
     }
 
     /**
-     * Indicates whether at least one URL is configured and parsable.
+     * Indicates whether the server is paired through a Tailcat tunnel.
+     */
+    @Ignore
+    val hasTailcat: Boolean = !tailcat.isNullOrBlank()
+
+    /**
+     * Indicates whether at least one URL is configured and parsable, or a Tailcat tunnel is paired.
      */
     @get:Ignore
     val hasAtLeastOneUrl: Boolean by lazy(LazyThreadSafetyMode.PUBLICATION) {
-        httpUrls.isNotEmpty()
+        httpUrls.isNotEmpty() || hasTailcat
     }
 
     /**
@@ -120,13 +131,14 @@ data class ServerConnectionInfo(
      * Checks if the server is registered and has at least one valid API URL.
      *
      * A server is considered registered if it has a webhook ID and at least one
-     * of its URLs (external, internal, or cloudhook) can be parsed successfully.
+     * of its URLs (external, internal, or cloudhook) can be parsed successfully, or it is
+     * paired through a Tailcat tunnel.
      *
      * @return `true` if the server is registered with valid URLs
      */
     @get:Ignore
     val isRegistered: Boolean by lazy(LazyThreadSafetyMode.PUBLICATION) {
-        !webhookId.isNullOrBlank() && httpUrls.isNotEmpty()
+        !webhookId.isNullOrBlank() && hasAtLeastOneUrl
     }
 
     /**

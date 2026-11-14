@@ -8,6 +8,16 @@ plugins {
 android {
     useLibrary("android.car")
 
+    sourceSets {
+        getByName("main") {
+            // libtailcat, built by tailcat/build-libtailcat.sh and not committed. Without it the app
+            // builds and runs normally and reports Tailcat as unavailable.
+            jniLibs {
+                directories += "tailcat/jniLibs"
+            }
+        }
+    }
+
     defaultConfig {
         manifestPlaceholders["sentryRelease"] = "$applicationId@$versionName"
         manifestPlaceholders["sentryDsn"] = System.getenv("SENTRY_DSN") ?: ""

@@ -68,6 +68,8 @@ private val DIVIDER_START_INSET = HADimens.SPACE4 + AVATAR_SIZE + HADimens.SPACE
  * @param onServerSelected invoked with [ServerChooserItem.serverId] when a row is tapped.
  * @param onDismissRequest invoked when the user dismisses the sheet (scrim tap, swipe or back).
  * @param sheetState state controlling the sheet, exposed so the host can drive show/hide animations.
+ * @param title the sheet's title, "Select server" by default.
+ * @param footer optional content shown below the servers, for example an extra action.
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -77,6 +79,8 @@ fun ServerChooser(
     modifier: Modifier = Modifier,
     onDismissRequest: () -> Unit = {},
     sheetState: SheetState = rememberHAModalBottomSheetState(),
+    title: String = stringResource(commonR.string.server_select),
+    footer: (@Composable () -> Unit)? = null,
 ) {
     HAModalBottomSheet(
         bottomSheetState = sheetState,
@@ -86,7 +90,7 @@ fun ServerChooser(
         LazyColumn {
             item {
                 Text(
-                    text = stringResource(commonR.string.server_select),
+                    text = title,
                     style = HATextStyle.HeadlineMedium,
                     textAlign = TextAlign.Center,
                     modifier = Modifier
@@ -100,6 +104,9 @@ fun ServerChooser(
                 if (index < items.lastIndex) {
                     HAHorizontalDivider(modifier = Modifier.padding(start = DIVIDER_START_INSET, end = HADimens.SPACE4))
                 }
+            }
+            if (footer != null) {
+                item { footer() }
             }
             item {
                 Spacer(

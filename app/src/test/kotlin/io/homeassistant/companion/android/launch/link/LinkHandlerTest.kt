@@ -3,6 +3,9 @@ package io.homeassistant.companion.android.launch.link
 import androidx.core.net.toUri
 import dagger.hilt.android.testing.HiltTestApplication
 import io.homeassistant.companion.android.common.data.servers.ServerManager
+import io.homeassistant.companion.android.common.data.tailcat.TailcatConfig
+import io.homeassistant.companion.android.common.data.tailcat.TailcatPairingLink
+import io.homeassistant.companion.android.common.data.tailcat.TailcatPairingLinkError
 import io.homeassistant.companion.android.common.util.FailFast
 import io.homeassistant.companion.android.database.server.Server
 import io.homeassistant.companion.android.database.server.ServerConnectionInfo
@@ -613,5 +616,32 @@ class LinkHandlerTest {
 
     private fun serverWithId(id: Int): Server = mockk {
         coEvery { this@mockk.id } returns id
+    }
+
+    /*
+        Tailcat pairing section
+     */
+    @Test
+    fun `Given a valid Tailcat pairing link when invoking handleLink then returns TailcatPairing`() = runTest {
+        val uri = "homeassistant://tailcat/pair?address=tcexample&key=privkey%3A01&port=8123&name=Home".toUri()
+
+        val result = handler.handleLink(uri)
+
+        assertEquals(
+            LinkDestination.TailcatPairing(TailcatPairingLink(TailcatConfig("tcexample", "privkey:01", 8123), "Home")),
+            result,
+        )
+    }
+
+    @Test
+    fun `Given an invalid Tailcat pairing link when invoking handleLink then returns InvalidTailcatPairing without failing fast`() = runTest {
+        var caughtException: Throwable? = null
+        FailFast.setHandler { exception, _ -> caughtException = exception }
+        val uri = "homeassistant://tailcat/pair?address=tcexample&key=privkey%3A01".toUri()
+
+        val result = handler.handleLink(uri)
+
+        assertEquals(LinkDestination.InvalidTailcatPairing(TailcatPairingLinkError.INVALID_PORT), result)
+        assertEquals(null, caughtException)
     }
 }
