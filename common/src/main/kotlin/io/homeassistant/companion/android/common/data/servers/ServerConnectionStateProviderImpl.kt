@@ -14,9 +14,11 @@ import dagger.hilt.android.qualifiers.ApplicationContext
 import io.homeassistant.companion.android.common.data.network.NetworkChangeObserver
 import io.homeassistant.companion.android.common.data.network.NetworkHelper
 import io.homeassistant.companion.android.common.data.network.WifiHelper
+import io.homeassistant.companion.android.common.data.tailcat.TailcatUrlProvider
 import io.homeassistant.companion.android.common.util.DisabledLocationHandler
 import io.homeassistant.companion.android.database.server.ServerConnectionInfo
 import io.homeassistant.companion.android.database.server.ServerDao
+import io.homeassistant.companion.android.util.hasSameOrigin
 import java.net.URL
 import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.flow.Flow
@@ -27,6 +29,7 @@ import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.mapNotNull
 import kotlinx.coroutines.flow.merge
 import okhttp3.HttpUrl
+import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import timber.log.Timber
 
 internal class ServerConnectionStateProviderImpl @AssistedInject constructor(
@@ -36,6 +39,7 @@ internal class ServerConnectionStateProviderImpl @AssistedInject constructor(
     private val wifiHelper: WifiHelper,
     private val networkHelper: NetworkHelper,
     private val networkChangeObserver: NetworkChangeObserver,
+    private val tailcatUrlProvider: TailcatUrlProvider,
     @Assisted private val serverId: Int,
 ) : ServerConnectionStateProvider {
 
@@ -109,10 +113,17 @@ internal class ServerConnectionStateProviderImpl @AssistedInject constructor(
             // Cloudhook URL: always add if available
             connection.cloudhookHttpUrl?.let(::add)
 
-            // External URL: use when on home network, or when connection is secure/allowed
+            // External URL: use when on home network, or when connection is secure/allowed. A plain
+            // HTTP external URL comes after the Tailcat tunnel, which is encrypted end to end.
             val externalUrlIsSecure = connection.externalUrl.startsWith("https://")
             val canUseExternalUrl = isOnHomeNetwork || externalUrlIsSecure || allowInsecure
-            if (canUseExternalUrl) {
+            if (canUseExternalUrl && externalUrlIsSecure) {
+                connection.externalHttpUrl?.buildWebhookUrl(webhookId)?.let(::add)
+            }
+
+            tailcatUrlProvider.localUrl(connection)?.buildWebhookUrl(webhookId)?.let(::add)
+
+            if (canUseExternalUrl && !externalUrlIsSecure) {
                 connection.externalHttpUrl?.buildWebhookUrl(webhookId)?.let(::add)
             }
         }
@@ -136,6 +147,8 @@ internal class ServerConnectionStateProviderImpl @AssistedInject constructor(
 
     override suspend fun canSafelySendCredentials(url: String): Boolean {
         val connection = connection()
+        // The tunnel's loopback URL is plain HTTP, but traffic leaves the device encrypted end to end.
+        if (isTailcatUrl(connection, url)) return true
         if (!connection.isKnownUrl(url)) return false
         if (url.startsWith("https://")) return true
 
@@ -161,13 +174,16 @@ internal class ServerConnectionStateProviderImpl @AssistedInject constructor(
                     !DisabledLocationHandler.isLocationEnabled(
                         context,
                     )
-            val potentialUrl = connection.getUrl(isInternal)
+            val tailcatUrl = tailcatUrlProvider.localUrl(connection)
+            val potentialUrl = connection.getUrl(isInternal, tailcatUrl)
+            // The Tailcat tunnel counts as secure: it is encrypted end to end like HTTPS.
+            val isTailcat = tailcatUrl != null && potentialUrl?.toString() == tailcatUrl.toUrl().toString()
             // Null means the user hasn't configured their insecure connection preference yet.
             // This only applies to users who installed before it became mandatory in onboarding.
             // Default to true to maintain backwards compatibility with their existing setup.
             val allowInsecure = connection.allowInsecureConnection ?: true
 
-            if (allowInsecure || potentialUrl?.protocol == "https") {
+            if (allowInsecure || isTailcat || potentialUrl?.protocol == "https") {
                 UrlState.HasUrl(potentialUrl)
             } else {
                 if (isInternal(requiresUrl = false)) {
@@ -177,6 +193,11 @@ internal class ServerConnectionStateProviderImpl @AssistedInject constructor(
                 }
             }
         }.distinctUntilChanged()
+    }
+
+    private suspend fun isTailcatUrl(connection: ServerConnectionInfo, url: String): Boolean {
+        val tailcatUrl = tailcatUrlProvider.localUrl(connection) ?: return false
+        return url.toHttpUrlOrNull()?.hasSameOrigin(tailcatUrl) == true
     }
 
     private fun observeConnectionInfoChanges(): Flow<ServerConnectionInfo> {
@@ -215,16 +236,31 @@ private fun HttpUrl.buildWebhookUrl(webhookId: String): HttpUrl {
         .build()
 }
 
-private fun ServerConnectionInfo.getUrl(isInternal: Boolean): URL? {
+/**
+ * Picks the URL to use: internal (on the home network) > cloud (when enabled) > HTTPS external >
+ * Tailcat tunnel > plain HTTP external.
+ *
+ * Unlike the iOS app, a plain HTTP external URL ranks below the tunnel: the onboarding stores the
+ * URL the server was found at as the external URL, which for most local-only setups is a LAN
+ * address that does not work away from home, while the tunnel works anywhere.
+ */
+private fun ServerConnectionInfo.getUrl(isInternal: Boolean, tailcatUrl: HttpUrl?): URL? {
+    val external = externalHttpUrl
     val url = if (isInternal && internalUrl != null) {
         Timber.d("Using internal URL")
         internalHttpUrl?.toUrl()
     } else if (useCloud && cloudUrl != null) {
         Timber.d("Using cloud / remote UI URL")
         cloudHttpUrl?.toUrl()
-    } else {
+    } else if (external != null && (external.isHttps || tailcatUrl == null)) {
         Timber.d("Using external URL")
-        externalHttpUrl?.toUrl()
+        external.toUrl()
+    } else if (tailcatUrl != null) {
+        Timber.d("Using Tailcat tunnel")
+        tailcatUrl.toUrl()
+    } else {
+        Timber.d("No usable URL")
+        null
     }
 
     return url
