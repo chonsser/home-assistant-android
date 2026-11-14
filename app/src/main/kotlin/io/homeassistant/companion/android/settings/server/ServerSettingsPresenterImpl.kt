@@ -158,6 +158,7 @@ class ServerSettingsPresenterImpl @Inject constructor(
                 ssids.isNotEmpty() || connection?.internalEthernet == true || connection?.internalVpn == true,
             )
             view.updateHomeNetwork(ssids, connection?.internalEthernet, connection?.internalVpn)
+            view.updateTailcat(connection?.hasTailcat == true)
         }
     }
 

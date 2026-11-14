@@ -38,6 +38,8 @@ import io.homeassistant.companion.android.settings.SettingsActivity
 import io.homeassistant.companion.android.settings.ssid.SsidFragment
 import io.homeassistant.companion.android.settings.url.ExternalUrlFragment
 import io.homeassistant.companion.android.settings.websocket.WebsocketSettingFragment
+import io.homeassistant.companion.android.tailcat.TAILCAT_SETTINGS_EXTRA_SERVER
+import io.homeassistant.companion.android.tailcat.TailcatSettingsFragment
 import io.homeassistant.companion.android.util.QuestUtil
 import io.homeassistant.companion.android.util.applyBottomSafeDrawingInsets
 import java.net.URLEncoder
@@ -191,6 +193,18 @@ class ServerSettingsFragment :
             }
         }
 
+        findPreference<Preference>("connection_tailcat")?.setOnPreferenceClickListener {
+            parentFragmentManager.commit {
+                replace(
+                    R.id.content,
+                    TailcatSettingsFragment::class.java,
+                    Bundle().apply { putInt(TAILCAT_SETTINGS_EXTRA_SERVER, serverId) },
+                )
+                addToBackStack(getString(commonR.string.tailcat_settings_title))
+            }
+            return@setOnPreferenceClickListener true
+        }
+
         findPreference<PreferenceCategory>("security_category")?.isVisible = !QuestUtil.isQuest
 
         findPreference<Preference>("websocket")?.let {
@@ -336,6 +350,12 @@ class ServerSettingsFragment :
                     url
                 }
         }
+    }
+
+    override fun updateTailcat(isPaired: Boolean) {
+        findPreference<Preference>("connection_tailcat")?.summary = getString(
+            if (isPaired) commonR.string.tailcat_status_paired else commonR.string.tailcat_status_not_paired,
+        )
     }
 
     override fun updateHomeNetwork(ssids: List<String>, ethernet: Boolean?, vpn: Boolean?) {
