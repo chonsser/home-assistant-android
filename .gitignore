@@ -374,3 +374,6 @@ merged_results.sarif
 !.claude/skills
 !.claude/settings.json
 .cursor
+
+# libtailcat, built by app/tailcat/build-libtailcat.sh
+/app/tailcat/jniLibs/

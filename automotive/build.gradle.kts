@@ -45,6 +45,9 @@ android {
             res {
                 directories += "../app/src/main/res"
             }
+            jniLibs {
+                directories += "../app/tailcat/jniLibs"
+            }
         }
         getByName("full") {
             kotlin {
